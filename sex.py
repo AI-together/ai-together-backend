@@ -201,7 +201,7 @@ def output(sid, data):
     else:
         logger.warning("Monitor client is not connected.")
 
-# 새로운 "filter" 이벤트 핸들러 추가 (이전의 'set_filter_number'를 대체)
+# 새로운 "filter" 이벤트 핸들러 수정 (ClientRole.LAPA 추가)
 @sio.event
 def filter(sid, data):
     logger.info(f"Received 'filter' event from SID {sid}: {data}")
@@ -214,7 +214,7 @@ def filter(sid, data):
                 sender_role = role
                 break
 
-    if sender_role not in [ClientRole.MONITOR, 'admin']:
+    if sender_role not in [ClientRole.MONITOR, 'admin', ClientRole.LAPA]:
         logger.warning(f"Unauthorized attempt to set filter_number by role '{sender_role}' (SID {sid})")
         sio.emit('error', {'message': 'Unauthorized to set filter_number'}, to=sid)
         return
@@ -241,6 +241,47 @@ def filter(sid, data):
     # 필터 번호가 성공적으로 업데이트되었음을 클라이언트에 알림
     sio.emit('filter_number_set', {'filter_number': filter_number}, to=sid)
     logger.info(f"Filter number set to {filter_number} by SID {sid}")
+
+# 새로운 "people" 이벤트 핸들러 추가
+@sio.event
+def people(sid, data):
+    logger.info(f"Received 'people' event from SID {sid}: {data}")
+
+    # 역할 확인
+    sender_role = None
+    with hub.lock:
+        for role, client_sid in hub.clients.items():
+            if client_sid == sid:
+                sender_role = role
+                break
+
+    if sender_role != ClientRole.LAPA:
+        logger.warning(f"Unauthorized attempt to set people_count by role '{sender_role}' (SID {sid})")
+        sio.emit('error', {'message': 'Unauthorized to set people_count'}, to=sid)
+        return
+
+    # 데이터 검증
+    if not isinstance(data, int) or data < 1:
+        logger.error("Invalid people_count format. Must be a positive integer.")
+        sio.emit('error', {'message': 'Invalid people_count format. Must be a positive integer.'}, to=sid)
+        return
+
+    people_count = data  # 정수형 데이터 직접 할당
+
+    # 인원 수 업데이트
+    hub.set_people_count(people_count)
+
+    # AI 클라이언트에 인원 수 업데이트 알림
+    ai_sid = hub.get_client_sid(ClientRole.AI)
+    if ai_sid:
+        sio.emit('people_updated', {'people_count': people_count}, to=ai_sid)
+        logger.info(f"Sent 'people_updated' event to AI client (SID {ai_sid}) with people_count {people_count}")
+    else:
+        logger.warning("AI client is not connected. Cannot send 'people_updated' event.")
+
+    # 인원 수가 성공적으로 업데이트되었음을 클라이언트에 알림
+    sio.emit('people_count_set', {'people_count': people_count}, to=sid)
+    logger.info(f"People count set to {people_count} by SID {sid}")
 
 # Serve static files from the "public" directory
 @app.route('/')
