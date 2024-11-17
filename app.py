@@ -32,6 +32,17 @@ class InputMessage:
 class OutputMessage:
     image: str
 
+# Define EndMessage structure for "end" event
+@dataclass
+class EndMessage:
+    end_frame: str
+    end_img1: str
+    end_img2: str
+
+@dataclass
+class CompositedEndMessage:
+    composited_image: str  # Assuming AI sends back a single composited image
+
 # Hub to manage clients and shared state
 class Hub:
     def __init__(self):
@@ -83,6 +94,10 @@ class Hub:
         with self.lock:
             self.output_image_data = image_data
             logger.info("Output image data updated.")
+
+    def set_end_images(self, end_frame: str, end_img1: str, end_img2: str):
+        # Optionally store end images if needed
+        pass
 
 # Initialize Flask and Socket.IO
 app = Flask(__name__, static_folder='public')
@@ -163,6 +178,7 @@ def image(sid, data):
     else:
         logger.warning("AI client is not connected.")
 
+# 새로운 "output" 이벤트 핸들러 추가
 @sio.event
 def output(sid, data):
     # 추가: AI 클라이언트로부터의 "output" 이벤트 핸들러
@@ -282,6 +298,117 @@ def people(sid, data):
     # 인원 수가 성공적으로 업데이트되었음을 클라이언트에 알림
     sio.emit('people_count_set', {'people_count': people_count}, to=sid)
     logger.info(f"People count set to {people_count} by SID {sid}")
+
+# 새로운 "trigger_end" 이벤트 핸들러 추가
+@sio.event
+def trigger_end(sid, data):
+    """
+    This event can be emitted by a client (e.g., Monitor) to request the server to send
+    the 'end' event to the AI client with three image strings.
+    """
+    logger.info(f"Received 'trigger_end' event from SID {sid}: {data}")
+
+    # 역할 확인
+    sender_role = None
+    with hub.lock:
+        for role, client_sid in hub.clients.items():
+            if client_sid == sid:
+                sender_role = role
+                break
+
+    # Define which roles are allowed to trigger the 'end' event
+    if sender_role not in [ClientRole.MONITOR, 'admin', ClientRole.LAPA]:
+        logger.warning(f"Unauthorized attempt to trigger 'end' by role '{sender_role}' (SID {sid})")
+        sio.emit('error', {'message': 'Unauthorized to trigger end'}, to=sid)
+        return
+
+    # 데이터 검증
+    if not isinstance(data, dict):
+        logger.error("Invalid data format for 'trigger_end'. Expected a dictionary.")
+        sio.emit('error', {'message': 'Invalid data format. Expected a dictionary with end images.'}, to=sid)
+        return
+
+    end_frame = data.get('end_frame')
+    end_img1 = data.get('end_img1')
+    end_img2 = data.get('end_img2')
+
+    if not all(isinstance(img, str) for img in [end_frame, end_img1, end_img2]):
+        logger.error("Invalid end image data format. All end images must be base64 strings.")
+        sio.emit('error', {'message': 'Invalid end image data format. All end images must be base64 strings.'}, to=sid)
+        return
+
+    # Optionally, store the end images
+    hub.set_end_images(end_frame, end_img1, end_img2)
+
+    # Create EndMessage
+    end_msg = EndMessage(
+        end_frame=end_frame,
+        end_img1=end_img1,
+        end_img2=end_img2
+    )
+
+    # Send 'end' event to AI client
+    ai_sid = hub.get_client_sid(ClientRole.AI)
+    if ai_sid:
+        sio.emit('end', end_msg.__dict__, to=ai_sid)
+        logger.info(f"Sent 'end' event to AI client (SID {ai_sid}) with end images.")
+    else:
+        logger.warning("AI client is not connected. Cannot send 'end' event.")
+
+    # Acknowledge the trigger to the sender
+    sio.emit('end_triggered', {'message': 'End event triggered successfully.'}, to=sid)
+    logger.info(f"'end' event triggered by SID {sid}")
+
+# 새로운 "end" 이벤트 핸들러 추가 (수신 부분)
+@sio.event
+def end(sid, data):
+    """
+    This handler processes the 'end' event received from the AI client.
+    It expects a composited image and forwards it to the Monitor client.
+    """
+    logger.info(f"Received 'end' event from SID {sid}: {data}")
+
+    # 역할 확인
+    sender_role = None
+    with hub.lock:
+        for role, client_sid in hub.clients.items():
+            if client_sid == sid:
+                sender_role = role
+                break
+
+    if not sender_role:
+        logger.warning(f"'end' event from unregistered client: SID {sid}")
+        sio.emit('error', {'message': 'Role not registered'}, to=sid)
+        return
+
+    if sender_role != ClientRole.AI:
+        logger.warning(f"Unauthorized 'end' event from role '{sender_role}' (SID {sid})")
+        sio.emit('error', {'message': 'Unauthorized event'}, to=sid)
+        return
+
+    # 데이터 검증
+    if not isinstance(data, dict):
+        logger.error("Invalid data format for 'end' event. Expected a dictionary.")
+        sio.emit('error', {'message': 'Invalid data format for end event.'}, to=sid)
+        return
+
+    composited_image = data.get('composited_image')
+    if not isinstance(composited_image, str):
+        logger.error("Invalid composited image format. Must be a base64 string.")
+        sio.emit('error', {'message': 'Invalid composited image format.'}, to=sid)
+        return
+
+    # Optionally, store the composited image
+    # hub.set_composited_image(composited_image)
+
+    # Forward the composited image to the Monitor client
+    monitor_sid = hub.get_client_sid(ClientRole.MONITOR)
+    if monitor_sid:
+        composited_msg = {'composited_image': composited_image}
+        sio.emit('end_composited', composited_msg, to=monitor_sid)
+        logger.info("Sent 'end_composited' event to Monitor client.")
+    else:
+        logger.warning("Monitor client is not connected. Cannot send 'end_composited' event.")
 
 # Serve static files from the "public" directory
 @app.route('/')
