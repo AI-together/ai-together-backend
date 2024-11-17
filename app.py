@@ -166,7 +166,7 @@ def image(sid, data):
 @sio.event
 def output(sid, data):
     # 추가: AI 클라이언트로부터의 "output" 이벤트 핸들러
-    logger.info(f"Received 'output' event from SID {sid}: {data} (type: {type(data)})")
+    logger.info(f"Received 'output' event from SID {sid}: base64data (type: {type(data)})")
 
     # 역할 확인
     sender_role = None
